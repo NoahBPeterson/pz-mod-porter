@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>browser-check</title></head>
+<body>
+<pre id="out">running…</pre>
+<script type="importmap">
+{ "imports": { "luaparse": "https://esm.sh/luaparse@0.3.1" } }
+</script>
+<script type="module">
+  // Verifies the exact browser module graph the app uses: parser, transforms
+  // (with JSON import attributes), convert orchestration, and report render.
+  import { convertMod } from '../dist/convert.js';
+  import { renderReportMarkdown, reportHeadline } from '../dist/report.js';
+
+  const mod = [
+    { path: 'MyMod/mod.info', text: 'name=My Test Mod\nid=mytest' },
+    { path: 'MyMod/media/scripts/recipes.txt', text:
+`module MT {
+  imports { Base }
+  recipe Make Gizmo {
+    Plank,
+    Nails=4,
+    keep [Recipe.GetItemTypes.Hammer]/ClawHammer,
+    Result:Gizmo=2,
+    Time:75,
+    Category:Carpentry,
+    CanBeDoneFromFloor:true,
+    OnGiveXP:Recipe.OnGiveXP.WoodWork5,
+  }
+}` },
+    { path: 'MyMod/media/scripts/items.txt', text:
+`module MT { item Gizmo { Type = Weapon, DisplayName = Gizmo, TeachedRecipes = X, } }` },
+    { path: 'MyMod/media/lua/client/MyMod.lua', text:
+`Events.OnGetTableResult.Add(f)\nEvents.OnPlayerUpdate.Add(g)\nrequire "TimedActions/ISAnvil"` },
+    { path: 'MyMod/media/textures/icon.png', text: null, bytes: new Uint8Array([1,2,3]) },
+  ];
+
+  const out = document.getElementById('out');
+  try {
+    const { files, report } = convertMod(mod);
+    const cr = files.find(f => f.text && f.text.includes('craftRecipe'));
+    const recipes = files.find(f => /recipes\.txt$/.test(f.path));
+    const json = files.find(f => /Recipes\.json$/.test(f.path));
+    const result = {
+      RESULT: 'OK',
+      headline: reportHeadline(report),
+      craftRecipeEmitted: /craftRecipe MakeGizmo/.test(recipes.text),
+      tagsKept: /tags\[Hammer\] mode:keep/.test(recipes.text),
+      qtyNails: /item 4 Base\.Nails/.test(recipes.text),
+      itemTypeMigrated: files.some(f => /ItemType = base:weapon/.test(f.text || '')),
+      recipesJson: !!json && JSON.parse(json.text).MakeGizmo === 'Make Gizmo',
+      luaEventRewritten: report.luaRewrites.some(x => x.kind === 'comment-event'),
+      luaRequireRewritten: report.luaRewrites.some(x => x.kind === 'comment-require'),
+      luaFileEdited: files.some(f => /MyMod\.lua$/.test(f.path) && f.text && f.text.includes('-- [B41->B42]')),
+      binaryPreserved: files.some(f => f.path.endsWith('.png') && f.text === null),
+      reportMd: renderReportMarkdown(report, 'My Test Mod').length > 100,
+    };
+    result.ALL_GREEN = Object.entries(result).every(([k,v]) => k==='RESULT'||k==='headline'||k==='reportMd'|| v === true);
+    out.textContent = 'BROWSERCHECK ' + JSON.stringify(result, null, 2);
+  } catch (e) {
+    out.textContent = 'BROWSERCHECK ' + JSON.stringify({ RESULT: 'ERROR', message: String(e && e.stack || e) });
+  }
+</script>
+</body></html>

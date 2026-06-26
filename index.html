@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PZ Mod Porter · Build 41 → 42</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
+</head>
+<body>
+  <div class="bg-grid" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▣</span>
+      <div>
+        <h1>PZ Mod Porter</h1>
+        <p class="tagline">Project Zomboid workshop mods · <b>Build&nbsp;41 → Build&nbsp;42</b></p>
+      </div>
+    </div>
+    <div class="badge" id="engineBadge">offline · 100% in-browser</div>
+  </header>
+
+  <main>
+    <section class="intro">
+      <p>Drop a Build&nbsp;41 mod and get a Build&nbsp;42 version back. Recipes are rewritten to the new
+      <code>craftRecipe</code> syntax, items are migrated (<code>Type → ItemType</code>), a
+      <code>Recipes.json</code> is generated, and your Lua is linted for removed events &amp; base files.
+      Nothing is uploaded — conversion runs entirely in your browser.</p>
+    </section>
+
+    <section
+      id="drop"
+      class="dropzone"
+      tabindex="0"
+      role="button"
+      aria-label="Drop a mod zip or folder here, or click to browse">
+      <div class="drop-inner">
+        <div class="drop-icon">⬇</div>
+        <p class="drop-title">Drop a mod <b>.zip</b> or <b>folder</b> here</p>
+        <p class="drop-sub">or click to browse · the folder containing <code>mod.info</code> / <code>media/</code></p>
+        <div class="drop-actions">
+          <button type="button" id="pickZip" class="btn">Choose .zip</button>
+          <button type="button" id="pickDir" class="btn btn-ghost">Choose folder</button>
+        </div>
+      </div>
+      <input type="file" id="fileZip" accept=".zip" hidden />
+      <input type="file" id="fileDir" webkitdirectory directory multiple hidden />
+    </section>
+
+    <section id="status" class="status" hidden></section>
+
+    <section id="results" class="results" hidden>
+      <div class="results-head">
+        <div>
+          <h2 id="modName">Converted</h2>
+          <p id="headline" class="headline"></p>
+        </div>
+        <div class="results-actions">
+          <button type="button" id="dlZip" class="btn btn-primary">⬇ Download B42 mod (.zip)</button>
+          <button type="button" id="dlReport" class="btn btn-ghost">⬇ Report (.md)</button>
+        </div>
+      </div>
+
+      <div class="counters" id="counters"></div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="report">Report</button>
+        <button class="tab" data-tab="diff">Sample diff</button>
+        <button class="tab" data-tab="files">Files</button>
+      </div>
+
+      <div class="tab-panel" id="tab-report"></div>
+      <div class="tab-panel" id="tab-diff" hidden></div>
+      <div class="tab-panel" id="tab-files" hidden></div>
+    </section>
+
+    <section class="explainer">
+      <h3>What it does &amp; doesn't</h3>
+      <div class="cards">
+        <div class="card good">
+          <h4>✓ Auto-converted</h4>
+          <ul>
+            <li><code>recipe</code> → <code>craftRecipe</code> (inputs/outputs, alternatives, keep-tools, quantities)</li>
+            <li>Recipe names → unique IDs + <code>Recipes.json</code> display names</li>
+            <li>Item <code>Type = X</code> → <code>ItemType = base:x</code></li>
+            <li><code>Recipe.GetItemTypes.X</code> tool lists → <code>tags[X]</code></li>
+          </ul>
+        </div>
+        <div class="card warn">
+          <h4>⚠ Flagged for review</h4>
+          <ul>
+            <li><code>OnGiveXP</code> → set <code>xpAward = Skill:n</code> manually</li>
+            <li><code>timedAction</code> defaulted to <code>Making</code></li>
+            <li>Sound / AnimNode / Prop1·2 placement</li>
+            <li>Removed item props (e.g. <code>TeachedRecipes</code>)</li>
+          </ul>
+        </div>
+        <div class="card info">
+          <h4>◌ Lua: rewritten where safe</h4>
+          <ul>
+            <li>Removed-event handlers → commented out + annotated</li>
+            <li><code>require()</code> of 132 removed base files → commented + annotated</li>
+            <li>Verified 1:1 global renames applied</li>
+            <li>Removed/restructured APIs &amp; overrides → flagged, not guessed</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Runs offline · your files never leave this machine.</span>
+    <span id="zipState" class="muted">loading zip engine…</span>
+  </footer>
+
+  <!-- JSZip for reading/writing mod archives in-browser -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"
+          integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg=="
+          crossorigin="anonymous" referrerpolicy="no-referrer"
+          onload="window.__jszip=true;document.getElementById('zipState').textContent='zip engine ready';"
+          onerror="document.getElementById('zipState').textContent='⚠ zip engine failed to load (need internet for first load)';"></script>
+  <!-- luaparse (Lua 5.1 = Kahlua dialect) resolved to a CDN ESM build for the browser -->
+  <script type="importmap">
+  { "imports": { "luaparse": "https://esm.sh/luaparse@0.3.1" } }
+  </script>
+  <script type="module" src="dist/app.js"></script>
+</body>
+</html>
