@@ -86,7 +86,12 @@ export function App(): React.ReactElement {
 
       <footer className="footer">
         <span>Runs offline — your mod files never leave this machine.</span>
-        <span className="muted">B41 → B42 · client-side converter</span>
+        <span className="footer-links">
+          <a href="https://github.com/NoahBPeterson/pz-mod-porter/issues" target="_blank" rel="noreferrer">
+            Report an issue
+          </a>
+          <span className="muted">· B41 → B42 · client-side</span>
+        </span>
       </footer>
     </div>
   );

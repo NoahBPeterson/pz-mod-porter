@@ -593,6 +593,91 @@ export async function buildZip(result: ModResult): Promise<Blob> {
 
 export const sanitize = (s: string): string => (s || 'mod').replace(/[^A-Za-z0-9_.-]+/g, '_');
 
+// ---------------------------------------------------------------------------
+// Issue reporting
+// ---------------------------------------------------------------------------
+
+export const ISSUES_URL = 'https://github.com/NoahBPeterson/pz-mod-porter/issues';
+
+const TIER_LABEL: Record<Tier, string> = {
+  clean: 'fully converted',
+  notes: 'minor notes',
+  review: 'review advised',
+  manual: 'needs manual porting',
+};
+
+const appVersion = (): string => (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev');
+const userAgent = (): string => (typeof navigator !== 'undefined' ? navigator.userAgent : 'n/a');
+
+/** Full plain-text diagnostic — downloaded so the user can attach it to an issue. */
+export function buildDiagnostic(result: ModResult): string {
+  const L: string[] = [];
+  L.push('PZ Mod Porter — conversion diagnostic');
+  L.push('='.repeat(42));
+  L.push(`Mod:      ${result.modName}`);
+  L.push(`Source:   ${result.sourceLabel}`);
+  L.push(`App:      pz-mod-porter @ ${appVersion()}`);
+  L.push(`Browser:  ${userAgent()}`);
+  L.push(`Verdict:  [${result.tier}] ${TIER_LABEL[result.tier]}`);
+  L.push(`          ${result.verdict}`);
+  L.push('');
+  L.push(`Stats:    ${result.headline}`);
+  if (result.map.convertible) {
+    L.push(`Map:      convertible · ${result.map.converted ? `converted (${result.map.cells} cells, ${result.map.squares.toLocaleString()} squares)` : 'NOT yet re-gridded'}`);
+  }
+  L.push('');
+  L.push('Findings:');
+  if (result.groups.length === 0) L.push('  (none — fully converted)');
+  for (const g of result.groups) {
+    L.push(`  [${g.tier}] ${g.title}  (${g.items.length})`);
+    L.push(`      ${g.blurb}`);
+    for (const it of g.items.slice(0, 40)) {
+      const loc = it.file ? `${it.file}${typeof it.line === 'number' && it.line > 0 ? `:${it.line}` : ''} — ` : '';
+      L.push(`      • ${loc}${it.message}`);
+      if (it.snippet) L.push(`          ${it.snippet.trim().slice(0, 140)}`);
+    }
+    if (g.items.length > 40) L.push(`      … and ${g.items.length - 40} more`);
+    L.push('');
+  }
+  const files = diffFiles(result.inputFiles, result.outputFiles);
+  const byStatus = files.reduce<Record<string, number>>((m, f) => ((m[f.status] = (m[f.status] ?? 0) + 1), m), {});
+  L.push(`Files:    ${files.length} (${Object.entries(byStatus).map(([k, v]) => `${v} ${k}`).join(', ')})`);
+  return L.join('\n');
+}
+
+/** A GitHub "new issue" URL with the key diagnostics pre-filled (kept short). */
+export function issueUrl(result: ModResult): string {
+  const title = `[Conversion] ${result.modName} — ${TIER_LABEL[result.tier]}`;
+  const flagged = result.groups.filter((g) => g.tier === 'manual' || g.tier === 'review');
+  const show = (flagged.length ? flagged : result.groups).slice(0, 6);
+
+  const b: string[] = [];
+  b.push('<!-- Describe what went wrong (e.g. how it behaved in-game) here. -->');
+  b.push('');
+  b.push(`**Mod:** ${result.modName}`);
+  b.push(`**Verdict:** \`${result.tier}\` — ${result.verdict}`);
+  b.push(`**Stats:** ${result.headline}`);
+  b.push(`**App:** pz-mod-porter @ ${appVersion()}`);
+  b.push(`**Browser:** ${userAgent()}`);
+  b.push('');
+  b.push('**Flagged by the converter:**');
+  if (show.length === 0) b.push('_Nothing — it reported fully converted._');
+  for (const g of show) {
+    b.push(`- **${g.title}** (${g.items.length})`);
+    for (const it of g.items.slice(0, 3)) {
+      const loc = it.file ? `\`${it.file}\` — ` : '';
+      b.push(`  - ${loc}${it.message}`);
+    }
+  }
+  b.push('');
+  b.push('> 📎 A full diagnostic `.txt` was just downloaded — please drag it into this issue.');
+
+  let body = b.join('\n');
+  if (body.length > 5500) body = `${body.slice(0, 5500)}\n…(truncated — see the attached .txt)`;
+  const q = new URLSearchParams({ title, body, labels: 'conversion' });
+  return `${ISSUES_URL}/new?${q.toString()}`;
+}
+
 export function saveBlob(blob: Blob, name: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

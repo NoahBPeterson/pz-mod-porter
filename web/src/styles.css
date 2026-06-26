@@ -297,6 +297,28 @@ h3 {
   border-color: #caa033;
   font-weight: 700;
 }
+.btn-report {
+  color: var(--orange);
+  background: var(--orange-soft);
+  border-color: #6a4d1c;
+  font-weight: 600;
+}
+.btn-report:hover {
+  background: #2a1f0c;
+  border-color: var(--orange);
+}
+.footer-links {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+.footer-links a {
+  color: var(--amber);
+  text-decoration: none;
+}
+.footer-links a:hover {
+  text-decoration: underline;
+}
 .btn-primary:hover {
   background: linear-gradient(135deg, #ffc04a, var(--amber));
 }

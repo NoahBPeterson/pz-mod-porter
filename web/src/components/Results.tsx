@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Bug,
   CheckCircle2,
   Download,
   FileText,
@@ -12,9 +13,11 @@ import {
   Wrench,
 } from 'lucide-react';
 import {
+  buildDiagnostic,
   buildZip,
   convertModMaps,
   diffFiles,
+  issueUrl,
   sanitize,
   saveBlob,
   type ModResult,
@@ -56,6 +59,13 @@ export function Results({ result, onReset }: { result: ModResult; onReset: () =>
       setBusy(false);
     }
   };
+  const reportIssue = (): void => {
+    // GitHub can't auto-attach files, so download the full diagnostic AND open
+    // a pre-filled issue — the user drags the .txt in.
+    saveBlob(new Blob([buildDiagnostic(current)], { type: 'text/plain' }), `${sanitize(current.modName)}-diagnostic.txt`);
+    window.open(issueUrl(current), '_blank', 'noopener,noreferrer');
+  };
+
   const convertMaps = async (): Promise<void> => {
     setMapBusy(true);
     setMapProgress(null);
@@ -138,6 +148,13 @@ export function Results({ result, onReset }: { result: ModResult; onReset: () =>
       <div className="action-bar">
         <button className="btn btn-primary" onClick={() => void downloadZip()} disabled={busy || mapBusy}>
           <Download size={17} /> {busy ? 'Packaging…' : 'Download B42 mod (.zip)'}
+        </button>
+        <button
+          className={`btn ${current.tier === 'manual' || current.tier === 'review' ? 'btn-report' : 'btn-ghost'}`}
+          onClick={reportIssue}
+          title="Downloads a diagnostic .txt and opens a pre-filled GitHub issue"
+        >
+          <Bug size={16} /> Report an issue
         </button>
         <span className="action-note">{current.headline}</span>
       </div>

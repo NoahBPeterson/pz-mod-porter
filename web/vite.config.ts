@@ -11,9 +11,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 // The repo name is derived from GITHUB_REPOSITORY ("owner/repo") in CI.
 const repo = process.env.GITHUB_REPOSITORY?.split('/')[1];
 const base = process.env.GITHUB_PAGES === 'true' && repo ? `/${repo}/` : '/';
+const version = (process.env.GITHUB_SHA ?? 'dev').slice(0, 7);
 
 export default defineConfig({
   base,
+  define: {
+    __APP_VERSION__: JSON.stringify(version),
+  },
   plugins: [react()],
   resolve: {
     alias: {
