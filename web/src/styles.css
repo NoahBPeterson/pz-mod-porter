@@ -873,6 +873,44 @@ h3 {
   border-color: #3c462c;
 }
 
+/* directory tree */
+.fe-dir {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 6px 9px;
+  cursor: pointer;
+  text-align: left;
+}
+.fe-dir:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+.fe-chev {
+  flex: none;
+  color: var(--faint);
+}
+.fe-dir .fe-icon {
+  color: var(--muted);
+}
+.fe-count {
+  flex: none;
+  font-size: 9.5px;
+  min-width: 16px;
+  text-align: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
 .explorer-view {
   background: var(--bg-2);
   border: 1px solid var(--line-soft);

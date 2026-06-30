@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { convertMod } from './convert.js';
 import { renderReportMarkdown, reportHeadline } from './report.js';
+import { decodeText } from './encoding.js';
 import type { ModFile } from './types.js';
 
 const TEXT_EXT: ReadonlySet<string> = new Set(['.txt', '.lua', '.json', '.info', '.md', '.csv', '.xml', '.ini']);
@@ -18,8 +19,9 @@ function walk(dir: string, base: string = dir, acc: ModFile[] = []): ModFile[] {
     } else {
       const rel = path.relative(base, full).split(path.sep).join('/');
       const ext = path.extname(name).toLowerCase();
-      if (TEXT_EXT.has(ext)) acc.push({ path: rel, text: fs.readFileSync(full, 'utf8') });
-      else acc.push({ path: rel, text: null, bytes: new Uint8Array(fs.readFileSync(full)) });
+      const bytes = new Uint8Array(fs.readFileSync(full));
+      if (TEXT_EXT.has(ext)) acc.push({ path: rel, text: decodeText(bytes, rel) });
+      else acc.push({ path: rel, text: null, bytes });
     }
   }
   return acc;

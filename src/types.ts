@@ -95,6 +95,8 @@ export interface ConversionReport {
   luaRewrites: LuaRewrite[];
   artifacts: string[];
   translations: Record<string, string>;
+  /** Item `Module.Id` -> migrated B41 DisplayName (B42 ItemName.json fallback). */
+  displayNames: Record<string, string>;
 }
 
 export interface ConvertResult {

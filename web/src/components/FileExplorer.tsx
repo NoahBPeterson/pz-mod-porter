@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { diffLines } from 'diff';
-import { FileCode2, FileImage, FilePlus2, Package, Pencil } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileCode2, FileImage, FilePlus2, Folder, FolderOpen, Package, Pencil } from 'lucide-react';
 import type { FileEntry, FileStatus } from '../lib/engine.ts';
 
 const STATUS_META: Record<FileStatus, { label: string; Icon: typeof FileCode2 }> = {
@@ -25,24 +25,28 @@ export function FileExplorer({ files }: { files: FileEntry[] }): React.ReactElem
   const active = visible.find((f) => f.path === selected) ?? visible[0];
   const unchangedCount = files.filter((f) => f.status === 'unchanged').length;
 
+  const tree = useMemo(() => buildTree(visible), [visible]);
+  // Collapse folders that hold no changed files (only relevant once unchanged
+  // are shown); keep paths to the changed files open. Recomputed per tree.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const toggleDir = (path: string): void =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+
   return (
     <div className="explorer">
       <aside className="explorer-list">
-        {visible.map((f) => {
-          const Icon = iconFor(f);
-          return (
-            <button
-              key={f.path}
-              className={`fe-item fe-${f.status}${active?.path === f.path ? ' active' : ''}`}
-              onClick={() => setSelected(f.path)}
-              title={f.path}
-            >
-              <Icon size={14} className="fe-icon" />
-              <span className="fe-name">{tail(f.path)}</span>
-              <span className={`fe-tag fe-tag-${f.status}`}>{STATUS_META[f.status].label}</span>
-            </button>
-          );
-        })}
+        <TreeRows
+          nodes={tree}
+          depth={0}
+          activePath={active?.path}
+          collapsed={collapsed}
+          onToggleDir={toggleDir}
+          onSelect={setSelected}
+        />
         {unchangedCount > 0 && (
           <button className="fe-toggle" onClick={() => setShowUnchanged((v) => !v)}>
             {showUnchanged ? 'Hide' : 'Show'} {unchangedCount} unchanged
@@ -54,6 +58,107 @@ export function FileExplorer({ files }: { files: FileEntry[] }): React.ReactElem
         {active ? <DiffView entry={active} /> : <p className="muted pad">No files.</p>}
       </div>
     </div>
+  );
+}
+
+// --- directory tree --------------------------------------------------------
+
+type FileLeaf = { type: 'file'; name: string; entry: FileEntry };
+type DirNode = { type: 'dir'; name: string; path: string; children: TreeNode[] };
+type TreeNode = FileLeaf | DirNode;
+
+// Group a flat file list into a directory tree, then collapse single-child
+// directory chains (e.g. media/lua/shared/Translate/EN) into one row so the
+// hierarchy stays shallow where nothing branches.
+function buildTree(files: readonly FileEntry[]): TreeNode[] {
+  const root: DirNode = { type: 'dir', name: '', path: '', children: [] };
+  for (const entry of files) {
+    const parts = entry.path.split('/');
+    let cur = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const name = parts[i] ?? '';
+      const path = parts.slice(0, i + 1).join('/');
+      let next = cur.children.find((c): c is DirNode => c.type === 'dir' && c.name === name);
+      if (!next) { next = { type: 'dir', name, path, children: [] }; cur.children.push(next); }
+      cur = next;
+    }
+    cur.children.push({ type: 'file', name: parts[parts.length - 1] ?? entry.path, entry });
+  }
+  return normalize(root.children);
+}
+
+function normalize(nodes: TreeNode[]): TreeNode[] {
+  const out = nodes.map((n) => {
+    if (n.type !== 'dir') return n;
+    let dir = n;
+    while (dir.children.length === 1 && dir.children[0]?.type === 'dir') {
+      const only = dir.children[0];
+      dir = { type: 'dir', name: `${dir.name}/${only.name}`, path: only.path, children: only.children };
+    }
+    return { type: 'dir' as const, name: dir.name, path: dir.path, children: normalize(dir.children) };
+  });
+  // Folders first, then files; each alphabetical.
+  out.sort((a, b) =>
+    a.type !== b.type ? (a.type === 'dir' ? -1 : 1) : a.name.localeCompare(b.name),
+  );
+  return out;
+}
+
+// Count changed (added/modified) files under a node — drives the folder badge.
+function changedCount(node: TreeNode): number {
+  if (node.type === 'file') return node.entry.status === 'added' || node.entry.status === 'modified' ? 1 : 0;
+  return node.children.reduce((s, c) => s + changedCount(c), 0);
+}
+
+function TreeRows(props: {
+  nodes: TreeNode[];
+  depth: number;
+  activePath: string | undefined;
+  collapsed: ReadonlySet<string>;
+  onToggleDir: (path: string) => void;
+  onSelect: (path: string) => void;
+}): React.ReactElement {
+  const { nodes, depth, activePath, collapsed, onToggleDir, onSelect } = props;
+  return (
+    <>
+      {nodes.map((n) => {
+        const pad = { paddingLeft: 8 + depth * 13 } as const;
+        if (n.type === 'dir') {
+          const open = !collapsed.has(n.path);
+          const changed = changedCount(n);
+          const Chevron = open ? ChevronDown : ChevronRight;
+          const FolderIcon = open ? FolderOpen : Folder;
+          return (
+            <div key={n.path}>
+              <button className="fe-dir" style={pad} onClick={() => onToggleDir(n.path)} title={n.path}>
+                <Chevron size={13} className="fe-chev" />
+                <FolderIcon size={14} className="fe-icon" />
+                <span className="fe-name">{n.name}</span>
+                {changed > 0 && <span className="fe-count">{changed}</span>}
+              </button>
+              {open && (
+                <TreeRows {...props} nodes={n.children} depth={depth + 1} />
+              )}
+            </div>
+          );
+        }
+        const f = n.entry;
+        const Icon = iconFor(f);
+        return (
+          <button
+            key={f.path}
+            className={`fe-item fe-${f.status}${activePath === f.path ? ' active' : ''}`}
+            style={pad}
+            onClick={() => onSelect(f.path)}
+            title={f.path}
+          >
+            <Icon size={14} className="fe-icon" />
+            <span className="fe-name">{n.name}</span>
+            <span className={`fe-tag fe-tag-${f.status}`}>{STATUS_META[f.status].label}</span>
+          </button>
+        );
+      })}
+    </>
   );
 }
 
@@ -215,6 +320,3 @@ function collapseContext(rows: Row[]): RenderRow[] {
   return out;
 }
 
-function tail(path: string): string {
-  return path.split('/').pop() ?? path;
-}

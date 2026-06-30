@@ -7,6 +7,7 @@ import { transformItem } from './transforms/item.js';
 import { rewriteLua } from './transforms/lua.js';
 import { transformRecipeCode } from './transforms/recipecode.js';
 import { buildXpIndex, ownDefinedNames } from './transforms/xp-index.js';
+import { convertTranslationTxt, isTranslationTxt } from './transforms/translation.js';
 import type { XpEntry } from './transforms/xp-index.js';
 import { VANILLA_XP_AWARDS } from './data/xp-awards.js';
 import type {
@@ -201,10 +202,13 @@ function transformModule(
       for (const w of warnings) report.warnings.push({ file: relPath, level: 'warn', message: w });
       newChildren.push(block);
     } else if (kw === 'item') {
-      const { block, warnings } = transformItem(child);
+      const { block, warnings, id, displayName } = transformItem(child);
       report.items.scanned++;
       if (warnings.length > 0) report.items.changed++;
       for (const w of warnings) report.warnings.push({ file: relPath, level: 'warn', message: w });
+      if (displayName !== undefined && id) {
+        report.displayNames[`${moduleCtx.moduleName}.${id}`] = displayName;
+      }
       newChildren.push(block);
     } else {
       newChildren.push(child);
@@ -226,6 +230,77 @@ function transformScriptAst(
   }
 }
 
+// Merge every translation source into Translate/<LANG>/<Cat>.json files:
+//   * converted .txt tables (modder-authored, highest among generated),
+//   * script-derived recipe display names -> Recipes.json,
+//   * migrated item DisplayName -> ItemName.json (EN).
+// A pre-existing .json the mod already shipped at the same path wins outright
+// (its keys seed the bucket first); within the generated sources the first
+// writer of a key wins, in the order above.
+function emitTranslations(
+  outFiles: ModFile[],
+  report: ConversionReport,
+  modRoot: string,
+  txtConversions: ReadonlyArray<ReturnType<typeof convertTranslationTxt>>,
+): void {
+  interface Bucket { path: string; entries: Record<string, string>; existed: boolean; }
+  const buckets = new Map<string, Bucket>();
+
+  const bucketFor = (outPath: string): Bucket => {
+    const key = outPath.toLowerCase();
+    const cached = buckets.get(key);
+    if (cached) return cached;
+    const existing = outFiles.find((f) => f.path.toLowerCase() === key);
+    const entries: Record<string, string> = {};
+    let existed = false;
+    if (existing && existing.text != null) {
+      existed = true;
+      try { Object.assign(entries, JSON.parse(existing.text) as Record<string, string>); } catch { /* replace unparseable json */ }
+    }
+    const b: Bucket = { path: existing ? existing.path : outPath, entries, existed };
+    buckets.set(key, b);
+    return b;
+  };
+  const fill = (b: Bucket, entries: Readonly<Record<string, string>>): void => {
+    for (const k of Object.keys(entries)) if (b.entries[k] === undefined) b.entries[k] = entries[k] ?? '';
+  };
+
+  // Real craftRecipe ids (from the script transform) are the ground truth for
+  // Recipes.json keys. A .txt recipe key like `Make_Thing` can't tell whether
+  // the `_` was an original underscore or a space-substitute, so reconcile each
+  // against the known ids by alphanumeric-normalized match — this both fixes
+  // underscore-named recipes and collapses the EN duplicate of the same id.
+  const norm = (s: string): string => s.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const recipeIdByNorm = new Map<string, string>();
+  for (const id of Object.keys(report.translations)) recipeIdByNorm.set(norm(id), id);
+
+  for (const conv of txtConversions) {
+    if (!conv) continue;
+    let entries = conv.entries;
+    if (conv.category === 'Recipes' && recipeIdByNorm.size > 0) {
+      entries = {};
+      for (const [k, v] of Object.entries(conv.entries)) entries[recipeIdByNorm.get(norm(k)) ?? k] = v;
+    }
+    fill(bucketFor(conv.outPath), entries);
+  }
+  if (Object.keys(report.translations).length > 0) {
+    fill(bucketFor(`${modRoot}media/lua/shared/Translate/EN/Recipes.json`), report.translations);
+  }
+  if (Object.keys(report.displayNames).length > 0) {
+    fill(bucketFor(`${modRoot}media/lua/shared/Translate/EN/ItemName.json`), report.displayNames);
+  }
+
+  for (const b of buckets.values()) {
+    const count = Object.keys(b.entries).length;
+    if (count === 0) continue;
+    const json = JSON.stringify(b.entries, null, 4) + '\n';
+    const existing = outFiles.find((f) => f.path.toLowerCase() === b.path.toLowerCase());
+    if (existing) existing.text = json;
+    else outFiles.push({ path: b.path, text: json });
+    report.artifacts.push(`${b.existed ? 'Updated' : 'Created'} ${b.path} (${count} ${count === 1 ? 'entry' : 'entries'}).`);
+  }
+}
+
 export interface ConvertOptions {
   /** Cross-mod XP index (from buildXpIndex over dependency/other mods). */
   xpIndex?: ReadonlyMap<string, XpEntry>;
@@ -242,6 +317,7 @@ export function convertMod(files: readonly ModFile[], options: ConvertOptions = 
     luaRewrites: [],
     artifacts: [],
     translations: {},
+    displayNames: {},
   };
 
   const scriptFiles = files.filter((f) => f.text != null && isScript(f.path));
@@ -272,9 +348,21 @@ export function convertMod(files: readonly ModFile[], options: ConvertOptions = 
 
   const outFiles: ModFile[] = [];
   let modRoot = '';
+  const txtConversions: ReturnType<typeof convertTranslationTxt>[] = [];
 
   for (const f of files) {
     if (f.text == null) { outFiles.push(f); continue; }
+
+    // B41 `.txt` translations -> B42 `.json` (B42 dropped .txt). Convert and
+    // drop the original; on parse failure keep the .txt and warn so nothing is
+    // silently lost.
+    if (isTranslationTxt(f.path)) {
+      if (!modRoot) modRoot = modRootOf(f.path);
+      const conv = convertTranslationTxt(f.path, f.text);
+      if (conv) txtConversions.push(conv);
+      else { outFiles.push(f); report.warnings.push({ file: f.path, level: 'warn', message: 'Could not parse translation table; left as .txt (B42 will not read it).' }); }
+      continue;
+    }
 
     if (isScript(f.path)) {
       report.scripts.scanned++;
@@ -358,25 +446,7 @@ export function convertMod(files: readonly ModFile[], options: ConvertOptions = 
     }
   }
 
-  const transKeys = Object.keys(report.translations);
-  if (transKeys.length > 0) {
-    const transPath = `${modRoot}media/lua/shared/Translate/EN/Recipes.json`;
-    const existing = outFiles.find((f) => f.path.toLowerCase() === transPath.toLowerCase());
-    let merged: Record<string, string> = {};
-    if (existing && existing.text) {
-      try { merged = JSON.parse(existing.text) as Record<string, string>; } catch { merged = {}; }
-    }
-    for (const k of transKeys) {
-      if (merged[k] === undefined) merged[k] = report.translations[k] ?? '';
-    }
-    const json = JSON.stringify(merged, null, 4) + '\n';
-    if (existing) existing.text = json;
-    else outFiles.push({ path: transPath, text: json });
-    report.artifacts.push(
-      `${existing ? 'Updated' : 'Created'} ${transPath} with ${transKeys.length} recipe name(s). ` +
-      `B42 reads recipe display names from this Recipes.json (keyed by craftRecipe ID).`,
-    );
-  }
+  emitTranslations(outFiles, report, modRoot, txtConversions);
 
   return { files: outFiles, report };
 }

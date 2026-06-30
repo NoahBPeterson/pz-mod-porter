@@ -89,6 +89,14 @@ export function transformRecipeCode(src: string): RecipeCodeResult | null {
     if (cat !== 'OnCreate') return; // only OnCreate signatures get rewritten
 
     const params = (fnNode['parameters'] as Node[] | undefined) ?? [];
+
+    // A vararg signature `function X(...)` is a forwarder: `...` captures
+    // whatever B42 passes (craftRecipeData, character) and the body forwards it
+    // on. Rewriting to fixed params would strip the vararg and make the body's
+    // `...` a syntax error ("cannot use '...' outside a vararg function").
+    // Leave these untouched — the vararg already adapts to B42's call.
+    if (params.some((p) => p['type'] === 'VarargLiteral')) return;
+
     const [fnStart, fnEnd] = fnNode.range;
     const open = src.indexOf('(', fnStart);
     const close = src.indexOf(')', open);

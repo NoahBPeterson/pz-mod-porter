@@ -19,6 +19,8 @@ export interface ItemResult {
   block: BlockNode;
   warnings: string[];
   id: string;
+  /** B41 `DisplayName` value, if present — B42 removed it; migrate to ItemName.json. */
+  displayName?: string;
 }
 
 // Convert a B41 `TeachedRecipes` value (`;`-separated recipe references) to a
@@ -46,10 +48,19 @@ export function transformItem(item: BlockNode): ItemResult {
   const warnings: string[] = [];
   const id = item.name;
   const newChildren: ScriptNode[] = [];
+  let displayName: string | undefined;
 
   for (const child of item.children) {
     if (child.type !== 'prop') { newChildren.push(child); continue; }
     const lk = child.key.toLowerCase();
+
+    if (lk === 'displayname') {
+      // Removed in B42 — the item name now comes from Translate/<LANG>/ItemName.json.
+      // Drop the property and hand the value back so convert() can migrate it.
+      displayName = child.value.trim();
+      warnings.push(`[${id}] DisplayName removed (B42); migrated to Translate/EN/ItemName.json.`);
+      continue;
+    }
 
     if (lk === 'type') {
       newChildren.push({
@@ -72,5 +83,9 @@ export function transformItem(item: BlockNode): ItemResult {
     newChildren.push(child);
   }
 
-  return { block: { type: 'block', keyword: item.keyword, name: item.name, children: newChildren }, warnings, id };
+  return {
+    block: { type: 'block', keyword: item.keyword, name: item.name, children: newChildren },
+    warnings, id,
+    ...(displayName !== undefined ? { displayName } : {}),
+  };
 }

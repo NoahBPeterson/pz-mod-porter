@@ -8,6 +8,7 @@ import { convertMapCells } from '@engine/map/convert.js';
 import { reprojectSpawnpoints, reprojectWorldMapXml } from '@engine/map/reproject.js';
 import { extractTilesheets } from '@engine/map/tiles-def.js';
 import { reportHeadline } from '@engine/report.js';
+import { decodeText } from '@engine/encoding.js';
 import type { ConversionReport, ModFile, LuaFinding, Warning } from '@engine/types.js';
 import type { MapWorkerRequest, MapWorkerResponse } from './map-worker.ts';
 
@@ -28,8 +29,9 @@ export async function readZip(file: Blob): Promise<ModFile[]> {
   const out: ModFile[] = [];
   for (const entry of Object.values(zip.files)) {
     if (entry.dir) continue;
-    if (isText(entry.name)) out.push({ path: entry.name, text: await entry.async('string') });
-    else out.push({ path: entry.name, text: null, bytes: await entry.async('uint8array') });
+    const bytes = await entry.async('uint8array');
+    if (isText(entry.name)) out.push({ path: entry.name, text: decodeText(bytes, entry.name) });
+    else out.push({ path: entry.name, text: null, bytes });
   }
   return out;
 }
@@ -39,8 +41,9 @@ export async function readDir(fileList: FileList | File[]): Promise<ModFile[]> {
   for (const f of Array.from(fileList)) {
     const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
     const path = rel && rel.length > 0 ? rel : f.name;
-    if (isText(f.name)) out.push({ path, text: await f.text() });
-    else out.push({ path, text: null, bytes: new Uint8Array(await f.arrayBuffer()) });
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    if (isText(f.name)) out.push({ path, text: decodeText(bytes, path) });
+    else out.push({ path, text: null, bytes });
   }
   return out;
 }
@@ -62,8 +65,9 @@ async function walkEntry(entry: FileSystemEntry, out: ModFile[]): Promise<void> 
     const fileEntry = entry as FileSystemFileEntry;
     const file = await new Promise<File>((resolve, reject) => fileEntry.file(resolve, reject));
     const path = entry.fullPath.replace(/^\//, '');
-    if (isText(file.name)) out.push({ path, text: await file.text() });
-    else out.push({ path, text: null, bytes: new Uint8Array(await file.arrayBuffer()) });
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (isText(file.name)) out.push({ path, text: decodeText(bytes, path) });
+    else out.push({ path, text: null, bytes });
     return;
   }
   if (entry.isDirectory) {

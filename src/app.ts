@@ -3,6 +3,7 @@
 
 import { convertMod } from './convert.js';
 import { renderReportMarkdown, reportHeadline } from './report.js';
+import { decodeText } from './encoding.js';
 import type { ConversionReport, ModFile } from './types.js';
 
 // --- minimal JSZip typings (loaded as a global from CDN) -------------------
@@ -36,8 +37,9 @@ async function readZip(file: Blob): Promise<ModFile[]> {
   const files: ModFile[] = [];
   for (const e of Object.values(zip.files)) {
     if (e.dir) continue;
-    if (isText(e.name)) files.push({ path: e.name, text: await e.async('string') });
-    else files.push({ path: e.name, text: null, bytes: await e.async('uint8array') });
+    const bytes = await e.async('uint8array');
+    if (isText(e.name)) files.push({ path: e.name, text: decodeText(bytes, e.name) });
+    else files.push({ path: e.name, text: null, bytes });
   }
   return files;
 }
@@ -47,8 +49,9 @@ async function readDir(fileList: FileList | File[]): Promise<ModFile[]> {
   for (const f of Array.from(fileList)) {
     const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
     const p = rel && rel.length > 0 ? rel : f.name;
-    if (isText(f.name)) files.push({ path: p, text: await f.text() });
-    else files.push({ path: p, text: null, bytes: new Uint8Array(await f.arrayBuffer()) });
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    if (isText(f.name)) files.push({ path: p, text: decodeText(bytes, p) });
+    else files.push({ path: p, text: null, bytes });
   }
   return files;
 }

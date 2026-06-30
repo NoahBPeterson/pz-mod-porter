@@ -52,28 +52,92 @@ function parenDelta(line: string): number {
 
 const indentOf = (line: string): string => (INDENT_RE.exec(line)?.[1]) ?? '';
 
+/**
+ * Blank out Lua COMMENTS only (replacing them with spaces, keeping length and
+ * newlines) so token detection never fires inside a comment. Strings are NOT
+ * blanked — a `require`'s argument is a string, so we must keep it — but they
+ * are skipped over so a `--` inside a string isn't mistaken for a comment.
+ * Without this, commenting a `require` inside a `--[[ ]]` block breaks the
+ * block: `--[[require "x"` -> `-- --[[require "x"` neutralises the `--[[`
+ * opener and un-comments everything below it.
+ */
+function maskLuaComments(src: string): string {
+  const out = src.split('');
+  const n = src.length;
+  const blank = (a: number, b: number): void => {
+    for (let k = a; k < b && k < n; k++) if (out[k] !== '\n') out[k] = ' ';
+  };
+  // Level of a long bracket at `pos` ([[ -> 0, [=[ -> 1, …), or -1 if none.
+  const longLevel = (pos: number): number => {
+    if (src[pos] !== '[') return -1;
+    let j = pos + 1;
+    let eq = 0;
+    while (src[j] === '=') { eq++; j++; }
+    return src[j] === '[' ? eq : -1;
+  };
+  let i = 0;
+  while (i < n) {
+    const c = src[i];
+    if (c === '-' && src[i + 1] === '-') {
+      const lvl = longLevel(i + 2);
+      if (lvl >= 0) {
+        const close = `]${'='.repeat(lvl)}]`;
+        const end = src.indexOf(close, i + 4 + lvl);
+        const stop = end < 0 ? n : end + close.length;
+        blank(i, stop); i = stop; continue;
+      }
+      let end = src.indexOf('\n', i);
+      if (end < 0) end = n;
+      blank(i, end); i = end; continue;
+    }
+    // Skip (do NOT blank) strings, so their contents survive for detection but a
+    // `--` inside them isn't read as a comment.
+    const lvl = longLevel(i);
+    if (lvl >= 0) {
+      const close = `]${'='.repeat(lvl)}]`;
+      const end = src.indexOf(close, i + 2 + lvl);
+      i = end < 0 ? n : end + close.length; continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < n && src[j] !== c && src[j] !== '\n') {
+        if (src[j] === '\\') j++;
+        j++;
+      }
+      i = j + 1; continue;
+    }
+    i++;
+  }
+  return out.join('');
+}
+
 export function rewriteLua(src: string, relPath = ''): LuaRewriteResult {
   const lines = src.split('\n');
+  // Detect tokens against a comment/string-masked view so we never edit code
+  // that lives inside a comment or string.
+  const maskedLines = maskLuaComments(src).split('\n');
   const rewrites: LuaRewrite[] = [];
   const findings: LuaFinding[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line === undefined) continue;
+    const masked = maskedLines[i] ?? line;
 
     // 1) Removed-event subscription -> comment out the whole statement.
-    const ev = EVENT_RE.exec(line);
+    const ev = EVENT_RE.exec(masked);
     if (ev && ev[1] && removedEventSet.has(ev[1])) {
       const end = statementEnd(lines, i);
       commentRange(lines, i, end, indentOf(line),
         `[B41->B42] Event "${ev[1]}" was removed in B42 — handler disabled (no replacement event).`);
+      maskedLines.splice(i, 0, ''); // keep masked view aligned with the inserted annotation
       rewrites.push({ line: i + 1, kind: 'comment-event', message: `Commented out handler for removed event "${ev[1]}".` });
       i = end + 1; // skip the annotation line we inserted + processed range
       continue;
     }
 
     // 2) triggerEvent of a removed event -> flag only (no-op, harmless to leave).
-    const trig = TRIGGER_RE.exec(line);
+    const trig = TRIGGER_RE.exec(masked);
     if (trig && trig[1] && removedEventSet.has(trig[1])) {
       findings.push({
         level: 'warn', line: i + 1, rule: 'removed-event-trigger',
@@ -83,7 +147,7 @@ export function rewriteLua(src: string, relPath = ''): LuaRewriteResult {
     }
 
     // 3) require()/loadfile() of a removed base file -> comment out the statement.
-    const req = REQUIRE_RE.exec(line);
+    const req = REQUIRE_RE.exec(masked);
     if (req && req[1]) {
       const mod = req[1].replace(/\.lua$/i, '').replace(/[\\/]/g, '/');
       const base = mod.split('/').pop() ?? '';
@@ -91,6 +155,7 @@ export function rewriteLua(src: string, relPath = ''): LuaRewriteResult {
         const end = statementEnd(lines, i);
         commentRange(lines, i, end, indentOf(line),
           `[B41->B42] Base file "${base}.lua" was removed/merged in B42 — require disabled. Re-point to the B42 equivalent.`);
+        maskedLines.splice(i, 0, ''); // keep masked view aligned with the inserted annotation
         rewrites.push({ line: i + 1, kind: 'comment-require', message: `Commented out require of removed base file "${base}.lua".` });
         i = end + 1;
         continue;

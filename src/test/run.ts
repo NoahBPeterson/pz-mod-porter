@@ -12,6 +12,8 @@ import { lintLua, rewriteLua } from '../transforms/lua.js';
 import { convertMod } from '../convert.js';
 import { renderReportMarkdown } from '../report.js';
 import { transformRecipeCode } from '../transforms/recipecode.js';
+import { convertTranslationTxt, isTranslationTxt } from '../transforms/translation.js';
+import { decodeText } from '../encoding.js';
 import { buildXpIndex } from '../transforms/xp-index.js';
 import type { ModFile, TransformContext } from '../types.js';
 
@@ -106,12 +108,16 @@ if (fs.existsSync(recipesPath)) {
   const src = `module Base { item Pistol { Type = Weapon, DisplayName = Pistol, ReplaceOnUseOn = WaterSource-X, } }`;
   const item = findBlocks(parseScript(src), 'item')[0];
   if (item) {
-    const { block, warnings } = transformItem(item);
+    const { block, warnings, displayName } = transformItem(item);
     const txt = serializeNode(block, 0);
     check('item: Type -> ItemType base:weapon', txt.includes('ItemType = base:weapon'));
     check('item: no leftover Type', !/\bType = /.test(txt));
-    // ReplaceOnUseOn is still valid in B42 -> passes through, no warning.
-    check('item: ReplaceOnUseOn passes through', /ReplaceOnUseOn = WaterSource-X/.test(txt) && warnings.length === 0);
+    // ReplaceOnUseOn is still valid in B42 -> passes through.
+    check('item: ReplaceOnUseOn passes through', /ReplaceOnUseOn = WaterSource-X/.test(txt));
+    // DisplayName removed in B42 -> captured for ItemName.json migration, dropped from script.
+    check('item: DisplayName captured', displayName === 'Pistol');
+    check('item: DisplayName dropped from script', !/DisplayName/.test(txt));
+    check('item: DisplayName migration warned', warnings.some((w) => /DisplayName.*ItemName\.json/.test(w)));
   } else check('item parsed', false);
 
   // B2: TeachedRecipes -> LearnedRecipes with recipe-ref sanitization.
@@ -467,6 +473,117 @@ if (fs.existsSync(recipesPath)) {
   const { files: f2 } = convertMod(recipeMod);
   const scr2 = f2.find((f) => /r\.txt$/.test(f.path));
   check('xpindex: without index, clean fn unresolved', scr2?.text != null && !/xpAward = Cooking:3/.test(scr2.text));
+}
+
+// --- Translation .txt -> .json --------------------------------------------
+{
+  const P = 'M/media/lua/shared/Translate/EN/';
+  // ItemName: strip the `ItemName_` prefix; keep the Module.Id remainder.
+  const itemName = convertTranslationTxt(`${P}ItemName_EN.txt`,
+    'ItemName_EN = {\n  ItemName_Base.Axe = "Fire Axe",\n  ItemName_Base.Pan = "Frying Pan",\n}');
+  check('trans: ItemName outPath', itemName?.outPath === `${P}ItemName.json`);
+  check('trans: ItemName prefix stripped', itemName?.entries['Base.Axe'] === 'Fire Axe' && itemName?.entries['Base.Pan'] === 'Frying Pan');
+  check('trans: ItemName lang from dir', itemName?.lang === 'EN');
+
+  // IG_UI: var IGUI -> file IG_UI; the IGUI_ key prefix is KEPT.
+  const igui = convertTranslationTxt(`${P}IG_UI_EN.txt`, 'IGUI_EN = {\n  IGUI_CraftUI_Title = "Craft",\n}');
+  check('trans: IGUI -> IG_UI.json', igui?.outPath === `${P}IG_UI.json`);
+  check('trans: IGUI prefix kept', igui?.entries['IGUI_CraftUI_Title'] === 'Craft');
+
+  // Recipe: var Recipe -> file Recipes; `Recipe_` prefix stripped.
+  const rec = convertTranslationTxt(`${P}Recipes_EN.txt`, 'Recipe_EN = {\n  Recipe_MakeHood = "Make Hood",\n}');
+  check('trans: Recipe -> Recipes.json', rec?.outPath === `${P}Recipes.json`);
+  check('trans: Recipe prefix stripped', rec?.entries['MakeHood'] === 'Make Hood');
+
+  // Moveables: digit-leading bare keys, no prefix to strip.
+  const mov = convertTranslationTxt(`${P}Moveables_EN.txt`, 'Moveables_EN = {\n  50s_Barstool = "Old Stool",\n}');
+  check('trans: Moveables digit key', mov?.entries['50s_Barstool'] === 'Old Stool');
+
+  // Tooltip: kept prefix + value with embedded unescaped quotes (engine-style
+  // first..last quote extraction) survive as valid JSON.
+  const tip = convertTranslationTxt(`${P}Tooltip_EN.txt`, 'Tooltip_EN = {\n  Tooltip_X = "Press "go" now",\n}');
+  check('trans: embedded quotes preserved', tip?.entries['Tooltip_X'] === 'Press "go" now');
+
+  // Comments (-- line, /* */, --[[ ]] block) ignored; brace on next line.
+  const sandbox = convertTranslationTxt(`${P}Sandbox_EN.txt`,
+    'Sandbox_EN =\n{\n  -- a line comment\n  /* block */ Sandbox_A = "Alpha", -- trailing\n  --[[ off\n  Sandbox_Hidden = "no", ]]\n  Sandbox_B = "Beta",\n}');
+  check('trans: comments stripped', sandbox?.entries['Sandbox_A'] === 'Alpha' && sandbox?.entries['Sandbox_B'] === 'Beta');
+  check('trans: commented entry omitted', sandbox?.entries['Sandbox_Hidden'] === undefined);
+
+  // Escapes: \n decoded then JSON-re-encoded (round-trips through JSON.parse).
+  const esc = convertTranslationTxt(`${P}UI_EN.txt`, 'UI_EN = {\n  UI_Multi = "line1\\nline2",\n}');
+  check('trans: \\n decoded', esc?.entries['UI_Multi'] === 'line1\nline2');
+
+  // Non-EN language taken from the directory, not the filename/var.
+  const es = convertTranslationTxt('M/media/lua/shared/Translate/ES/ItemName_ES.txt', 'ItemName_ES = {\n  ItemName_Base.Axe = "Hacha",\n}');
+  check('trans: ES dir', es?.lang === 'ES' && es?.outPath === 'M/media/lua/shared/Translate/ES/ItemName.json');
+
+  check('trans: isTranslationTxt true', isTranslationTxt('x/Translate/EN/ItemName_EN.txt'));
+  check('trans: isTranslationTxt false (scripts)', !isTranslationTxt('x/media/scripts/items.txt'));
+
+  // Permissive keys: UUID/hyphen, punctuation runs, and colons all survive.
+  const rm = convertTranslationTxt(`${P}Recorded_Media_EN.txt`,
+    '// itemDisplayName\nRM_803c516d-a209-4ba8-9695-8865653d0fce = "Home VHS",\n');
+  check('trans: headerless UUID-hyphen key', rm?.entries['RM_803c516d-a209-4ba8-9695-8865653d0fce'] === 'Home VHS');
+  const cos = convertTranslationTxt(`${P}Items_EN.txt`, 'Items_EN = {\n  DisplayName_Wand:Sectumsempra_(Female) = "Sectumsempra",\n}');
+  check('trans: colon+paren key', cos?.entries['DisplayName_Wand:Sectumsempra_(Female)'] === 'Sectumsempra');
+
+  // Empty stub table -> null (nothing to emit, not an error).
+  check('trans: empty table -> null', convertTranslationTxt(`${P}Tooltip_EN.txt`, 'Tooltip_EN = {\n}') === null);
+  // A `language.txt`-style config (no quoted entries) -> null, so convert() keeps
+  // the original file (B42 still reads language.txt).
+  check('trans: non-table config -> null', convertTranslationTxt(`${P}language.txt`, 'text = English\ncharset = UTF-8') === null);
+}
+
+// --- convertMod: translations end-to-end ----------------------------------
+{
+  const mod: ModFile[] = [
+    { path: 'M/media/scripts/i.txt', text: 'module Base { item Axe { Type = Weapon, DisplayName = Trusty Axe, } item Pan { Type = Normal, DisplayName = Old Pan, } }' },
+    { path: 'M/media/lua/shared/Translate/EN/ItemName_EN.txt', text: 'ItemName_EN = {\n  ItemName_Base.Pan = "Frying Pan",\n}' },
+    { path: 'M/media/lua/shared/Translate/EN/IG_UI_EN.txt', text: 'IGUI_EN = {\n  IGUI_Foo = "Bar",\n}' },
+  ];
+  const { files } = convertMod(mod);
+  const txtLeft = files.filter((f) => /Translate\/.*\.txt$/.test(f.path));
+  check('e2e-trans: .txt dropped', txtLeft.length === 0);
+  const itemNameJson = files.find((f) => /Translate\/EN\/ItemName\.json$/.test(f.path));
+  const parsed = itemNameJson?.text != null ? (JSON.parse(itemNameJson.text) as Record<string, string>) : {};
+  // Modder's explicit ItemName_EN.txt wins; DisplayName fills the gap (Axe).
+  check('e2e-trans: ItemName.json from .txt', parsed['Base.Pan'] === 'Frying Pan');
+  check('e2e-trans: DisplayName migrated to ItemName.json', parsed['Base.Axe'] === 'Trusty Axe');
+  const iguiJson = files.find((f) => /Translate\/EN\/IG_UI\.json$/.test(f.path));
+  check('e2e-trans: IG_UI.json emitted', iguiJson?.text != null && /"IGUI_Foo": "Bar"/.test(iguiJson.text));
+  const scriptOut = files.find((f) => /scripts\/i\.txt$/.test(f.path));
+  check('e2e-trans: DisplayName stripped from item script', scriptOut?.text != null && !/DisplayName/.test(scriptOut.text));
+}
+
+// --- Text decoding (encoding detection) -----------------------------------
+{
+  const enc = new TextEncoder();
+  const u16le = (s: string, bom: boolean): Uint8Array => {
+    const body = new Uint8Array(s.length * 2 + (bom ? 2 : 0));
+    let o = 0;
+    if (bom) { body[o++] = 0xff; body[o++] = 0xfe; }
+    for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); body[o++] = c & 0xff; body[o++] = c >> 8; }
+    return body;
+  };
+  const u16be = (s: string, bom: boolean): Uint8Array => {
+    const body = new Uint8Array(s.length * 2 + (bom ? 2 : 0));
+    let o = 0;
+    if (bom) { body[o++] = 0xfe; body[o++] = 0xff; }
+    for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); body[o++] = c >> 8; body[o++] = c & 0xff; }
+    return body;
+  };
+  const sample = 'ItemName_KO = {\n  Foo = "Bar",\n}';
+  check('enc: plain UTF-8', decodeText(enc.encode(sample)) === sample);
+  check('enc: UTF-8 BOM stripped', decodeText(new Uint8Array([0xef, 0xbb, 0xbf, ...enc.encode('Hi')])) === 'Hi');
+  check('enc: UTF-16 LE w/ BOM', decodeText(u16le(sample, true)) === sample);
+  check('enc: UTF-16 BE w/ BOM', decodeText(u16be(sample, true)) === sample);
+  check('enc: UTF-16 LE no BOM (NUL heuristic)', decodeText(u16le(sample, false)) === sample);
+  check('enc: UTF-16 BE no BOM (NUL heuristic)', decodeText(u16be(sample, false)) === sample);
+  // windows-1252 byte 0xFA = "ú" — invalid UTF-8, recovered via the ES charset.
+  check('enc: legacy 1252 by lang', decodeText(new Uint8Array([0x61, 0x7a, 0xfa, 0x63, 0x61, 0x72]), 'x/Translate/ES/ItemName_ES.txt') === 'azúcar');
+  // Genuinely-accented UTF-8 is preserved (not mistaken for legacy).
+  check('enc: UTF-8 accents preserved', decodeText(enc.encode('café'), 'x/Translate/FR/UI_FR.txt') === 'café');
 }
 
 console.log(`\n${fail === 0 ? '✓ ALL PASS' : '✗ FAILURES'}  —  ${pass} passed, ${fail} failed`);
