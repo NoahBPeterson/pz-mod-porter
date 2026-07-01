@@ -22,6 +22,31 @@ function modRootOf(path: string): string {
   return idx >= 0 ? path.slice(0, idx) : '';
 }
 
+export interface ModMeta {
+  /** mod.info id, sanitized to a valid namespace (for custom ItemTags). */
+  id?: string;
+  /** Declared dependencies (require/loadModAfter/loadModBefore), `\`-prefix stripped. */
+  deps: string[];
+}
+
+// Read the first mod.info: the id (custom-tag namespace) and its declared
+// dependencies. A custom tag a mod references might actually be OWNED by one of
+// these deps — in which case it needs THAT mod's namespace, not this one's — so
+// we surface the dep ids in a warning (the converter can't resolve cross-mod
+// ownership from a single mod in isolation).
+function extractModMeta(files: readonly ModFile[]): ModMeta {
+  for (const f of files) {
+    if (f.text == null || !/(^|\/)mod\.info$/i.test(f.path)) continue;
+    const id = /^\s*id\s*=\s*(.+?)\s*$/im.exec(f.text)?.[1]?.trim().replace(/[^A-Za-z0-9_]/g, '');
+    const deps = [...f.text.matchAll(/^\s*(?:require|loadModAfter|loadModBefore)\s*=\s*(.+?)\s*$/gim)]
+      .flatMap((m) => (m[1] ?? '').split(','))
+      .map((s) => s.trim().replace(/^.*\\/, '')) // strip WORKSHOP_ID\ prefix -> bare MOD_ID
+      .filter((s) => s.length > 0);
+    return { ...(id ? { id } : {}), deps: [...new Set(deps)] };
+  }
+  return { deps: [] };
+}
+
 // Scan a mod's Lua for its own `OnGiveXP` functions so recipe conversion can
 // resolve mod-defined references (not just vanilla ones). Maps the function's
 // last name-segment -> `Skill:amount` from the first `AddXP(Perks.X, N)`.
@@ -202,7 +227,10 @@ function transformModule(
       for (const w of warnings) report.warnings.push({ file: relPath, level: 'warn', message: w });
       newChildren.push(block);
     } else if (kw === 'item') {
-      const { block, warnings, id, displayName } = transformItem(child);
+      const tagOpts: { modId?: string; customTags?: Set<string> } = {};
+      if (moduleCtx.modId !== undefined) tagOpts.modId = moduleCtx.modId;
+      if (moduleCtx.customItemTags !== undefined) tagOpts.customTags = moduleCtx.customItemTags;
+      const { block, warnings, id, displayName } = transformItem(child, tagOpts);
       report.items.scanned++;
       if (warnings.length > 0) report.items.changed++;
       for (const w of warnings) report.warnings.push({ file: relPath, level: 'warn', message: w });
@@ -265,11 +293,17 @@ function emitTranslations(
     for (const k of Object.keys(entries)) if (b.entries[k] === undefined) b.entries[k] = entries[k] ?? '';
   };
 
-  // Real craftRecipe ids (from the script transform) are the ground truth for
-  // Recipes.json keys. A .txt recipe key like `Make_Thing` can't tell whether
-  // the `_` was an original underscore or a space-substitute, so reconcile each
-  // against the known ids by alphanumeric-normalized match — this both fixes
-  // underscore-named recipes and collapses the EN duplicate of the same id.
+  // B42 reads Recipes.json by the craftRecipe id, so a translation only applies
+  // if it's KEYED by that id. The modder's Recipes_<LANG>.txt keys use the B41
+  // form (recipe name with spaces -> underscores, e.g. `Make_Thing`), which we
+  // can't unambiguously map back (was `_` a space or a real underscore?). So we
+  // reconcile each key against the mod's real craftRecipe ids (from the script
+  // transform) by alphanumeric-normalized match. This is what makes localized
+  // recipe names actually show — without it a non-EN entry stays under the old
+  // key, B42 never queries it, and the translation is silently dropped. (An
+  // incidental effect is that the EN entry lands on the same id as the
+  // script-derived name and the two merge — but that merge does nothing on its
+  // own; the point is the key, not the de-duplication.)
   const norm = (s: string): string => s.replace(/[^a-z0-9]/gi, '').toLowerCase();
   const recipeIdByNorm = new Map<string, string>();
   for (const id of Object.keys(report.translations)) recipeIdByNorm.set(norm(id), id);
@@ -337,6 +371,9 @@ export function convertMod(files: readonly ModFile[], options: ConvertOptions = 
   for (const [name, e] of options.xpIndex ?? new Map()) addEntry(name, e, true);
   for (const [name, e] of ownXpIndex) addEntry(name, e, false);
 
+  const modMeta = extractModMeta(files);
+  const modId = modMeta.id;
+  const customItemTags = new Set<string>();
   const base: Omit<TransformContext, 'moduleName'> = {
     knownItems: collectKnownItems(scriptFiles),
     usedIds: new Set<string>(),
@@ -344,6 +381,8 @@ export function convertMod(files: readonly ModFile[], options: ConvertOptions = 
     xpAwards: { ...VANILLA_XP_AWARDS, ...indexAwards, ...collectModXpAwards(files) },
     xpShimFns: new Set<string>([...collectModDefinedFns(files), ...inlineCandidates.keys()]),
     xpShims,
+    customItemTags,
+    ...(modId !== undefined ? { modId } : {}),
   };
 
   const outFiles: ModFile[] = [];
@@ -444,6 +483,42 @@ export function convertMod(files: readonly ModFile[], options: ConvertOptions = 
         'B41Compat = B41Compat or {}\nfunction B41Compat.hideFromMenu() return false end\n' });
       report.artifacts.push(`Created ${hidePath} — IsHidden recipes kept usable but hidden from the menu via OnAddToMenu.`);
     }
+  }
+
+  // Register the mod's custom ItemTags. B42 requires custom tags to be
+  // namespaced + registered (bare ones resolve to the reserved `base:` namespace
+  // and silently fail); item Tags= were already rewritten to `<modId>:<tag>`.
+  if (customItemTags.size > 0 && modId) {
+    const tags = [...customItemTags].sort();
+    const regPath = `${modRoot}media/registries.lua`;
+    const existing = outFiles.find((f) => f.path.toLowerCase() === regPath.toLowerCase());
+    const L = [
+      '-- Auto-generated by PZ Mod Porter (B41 -> B42).',
+      "-- Registers this mod's custom ItemTags. B42 requires custom tags to be",
+      '-- namespaced and registered; the matching item Tags= were rewritten to',
+      `-- "${modId}:<tag>". registries.lua loads before scripts.`,
+      ...tags.map((t) => `ItemTag.register("${modId}:${t}")`),
+      '',
+    ];
+    const text = L.join('\n');
+    if (existing) existing.text = `${existing.text}\n${text}`;
+    else outFiles.push({ path: regPath, text });
+    report.artifacts.push(
+      `${existing ? 'Updated' : 'Created'} ${regPath} registering ${tags.length} custom ItemTag(s): ${tags.slice(0, 8).join(', ')}${tags.length > 8 ? ', …' : ''}.`,
+    );
+    // Cross-mod caveat: a custom tag may actually be OWNED by a dependency, in
+    // which case it needs the dependency's namespace (not this mod's) and must
+    // NOT be re-registered here. We can't tell from one mod in isolation, so we
+    // name the dependency mods to convert/coordinate with.
+    const tagList = `${tags.slice(0, 12).join(', ')}${tags.length > 12 ? `, … (${tags.length} total)` : ''}`;
+    const depNote = modMeta.deps.length > 0
+      ? ` This mod's mod.info declares dependencies: ${modMeta.deps.join(', ')}. If any of these tags is defined by one of those mods, it must use THAT mod's namespace instead — convert those mods to B42 too and give the shared tag a single common namespace.`
+      : ' If any of these tags is shared with another mod, every mod using it must adopt the same namespace.';
+    report.warnings.push({
+      file: regPath,
+      level: 'warn',
+      message: `Namespaced ${tags.length} custom ItemTag(s) to "${modId}:" and registered them in registries.lua: ${tagList}.${depNote}`,
+    });
   }
 
   emitTranslations(outFiles, report, modRoot, txtConversions);

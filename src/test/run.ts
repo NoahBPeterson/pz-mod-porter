@@ -475,6 +475,55 @@ if (fs.existsSync(recipesPath)) {
   check('xpindex: without index, clean fn unresolved', scr2?.text != null && !/xpAward = Cooking:3/.test(scr2.text));
 }
 
+// --- ItemTag namespacing + registries.lua ---------------------------------
+{
+  const parse1 = (src: string): import('../types.js').BlockNode => {
+    const b = findBlocks(parseScript(src), 'item')[0];
+    if (!b) throw new Error('no item');
+    return b;
+  };
+  // Vanilla tags resolve bare in B42 -> untouched. Custom tag -> namespaced + collected.
+  const custom = new Set<string>();
+  const it = parse1('module Base { item Knife { Tags = Sharpenable;MyCustomTag;base:already, } }');
+  const { block, warnings } = transformItem(it, { modId: 'MyMod', customTags: custom });
+  const tagsVal = (block.children.find((c) => c.type === 'prop' && c.key === 'Tags') as { value: string } | undefined)?.value ?? '';
+  check('tag: vanilla left bare', /(^|;)\s*Sharpenable\s*(;|$)/.test(tagsVal));
+  check('tag: custom namespaced', /MyMod:MyCustomTag/.test(tagsVal));
+  check('tag: already-namespaced untouched', /base:already/.test(tagsVal));
+  check('tag: custom collected', custom.has('MyCustomTag') && custom.size === 1);
+  check('tag: warned', warnings.some((w) => /MyCustomTag/.test(w)));
+  // No modId -> leave bare (can't namespace), don't collect.
+  const c2 = new Set<string>();
+  const it2 = parse1('module Base { item X { Tags = WeirdTag, } }');
+  const { block: b2 } = transformItem(it2, { customTags: c2 });
+  const v2 = (b2.children.find((c) => c.type === 'prop' && c.key === 'Tags') as { value: string } | undefined)?.value ?? '';
+  check('tag: no modId leaves bare', /WeirdTag/.test(v2) && !/:/.test(v2) && c2.size === 0);
+
+  // End-to-end: registries.lua emitted, item Tags= rewritten, vanilla untouched.
+  const mod: ModFile[] = [
+    { path: 'M/mod.info', text: 'name=Tagger\nid=TaggerMod' },
+    { path: 'M/media/scripts/items.txt', text: 'module T { item Blade { Type = Weapon, Tags = Sharpenable;CustomBlade, } }' },
+  ];
+  const { files } = convertMod(mod);
+  const script = files.find((f) => /items\.txt$/.test(f.path));
+  const reg = files.find((f) => /media\/registries\.lua$/.test(f.path));
+  check('tag e2e: vanilla bare in script', script?.text != null && /Sharpenable/.test(script.text) && !/base:Sharpenable/.test(script.text));
+  check('tag e2e: custom namespaced in script', script?.text != null && /TaggerMod:CustomBlade/.test(script.text));
+  check('tag e2e: registries.lua created', reg?.text != null && /ItemTag\.register\("TaggerMod:CustomBlade"\)/.test(reg.text));
+  check('tag e2e: registries at media root', reg?.path === 'M/media/registries.lua');
+
+  // Cross-mod warning: a custom tag may belong to a dependency -> name the deps.
+  const depMod: ModFile[] = [
+    { path: 'P/mod.info', text: 'name=Patch\nid=MyPatch\nrequire=BaseMod\\BaseModId,OtherDep' },
+    { path: 'P/media/scripts/i.txt', text: 'module P { item Gun { Type = Weapon, Tags = SharedThing, } }' },
+  ];
+  const { report } = convertMod(depMod);
+  const warn = report.warnings.find((w) => /Namespaced .* custom ItemTag/.test(w.message));
+  check('tag dep-warn: emitted', warn != null);
+  check('tag dep-warn: names the custom tag', warn?.message.includes('SharedThing') ?? false);
+  check('tag dep-warn: lists deps (\\-prefix stripped)', /BaseModId/.test(warn?.message ?? '') && /OtherDep/.test(warn?.message ?? '') && !/BaseMod\\/.test(warn?.message ?? ''));
+}
+
 // --- Translation .txt -> .json --------------------------------------------
 {
   const P = 'M/media/lua/shared/Translate/EN/';

@@ -126,6 +126,10 @@ export interface TransformContext {
   xpShimFns?: ReadonlySet<string>;
   /** Collector: shims the recipe transform wants convert() to emit as Lua. */
   xpShims?: XpShim[];
+  /** This mod's id (from mod.info) — the namespace for its custom ItemTags. */
+  modId?: string;
+  /** Collector: custom (non-vanilla) ItemTags found, for registries.lua. */
+  customItemTags?: Set<string>;
 }
 
 export interface XpShim {
